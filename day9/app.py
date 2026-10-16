@@ -1,4 +1,5 @@
 import sqlite3
+from pathlib import Path
 
 
 def read_integer(prompt, minimum=1):
@@ -170,7 +171,8 @@ def return_book(conn):
 
 def main():
     try:
-        conn = sqlite3.connect("/Users/punith/Documents/10-Day-Sprint/library.db")
+        database_path = Path(__file__).resolve().with_name("library.db")
+        conn = sqlite3.connect(database_path)
         conn.execute("PRAGMA foreign_keys = ON")
         loan_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(loans)").fetchall()

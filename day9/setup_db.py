@@ -1,78 +1,144 @@
-
 import sqlite3
-
-conn=sqlite3.connect('library.db')
-
-f=conn.cursor()
-
-f.execute("PRAGMA foreign_keys = ON;")
-
-f.execute("DROP TABLE IF EXISTS loans;")
-f.execute("DROP TABLE IF EXISTS books;")
-f.execute("DROP TABLE IF EXISTS members;")
-f.execute("DROP TABLE IF EXISTS authors;")
-
-with open('/Users/punith/Documents/10-Day-Sprint/day8/schema.sql','r') as file:
-    sql_script = file.read()
-
-f.executescript(sql_script)
-
-print("Tables created successfully from schema.sql!")
+from pathlib import Path
 
 
-f.execute("PRAGMA foreign_keys = ON;")
+DATABASE_PATH = Path(__file__).resolve().with_name("library.db")
+SCHEMA_PATH = Path(__file__).resolve().with_name("schema.sql")
 
-# 1. Insert 5 Authors (Parents to books)
-authors_data = [
-    ("J.K. Rowling",),
-    ("George Orwell",),
-    ("J.R.R. Tolkien",),
-    ("Agatha Christie",),
-    ("Dan Brown",)
-]
-f.executemany("INSERT OR IGNORE INTO authors (name) VALUES (?)", authors_data)
+AUTHORS = (
+    "J.K. Rowling",
+    "George Orwell",
+    "J.R.R. Tolkien",
+    "Agatha Christie",
+    "Dan Brown",
+)
 
-# 2. Insert 8 Books (References author_id 1 through 5)
-books_data = [
-    ("Harry Potter and the Sorcerer's Stone", 1, 5),
-    ("Harry Potter and the Chamber of Secrets", 1, 3),
-    ("1984", 2, 4),
-    ("Animal Farm", 2, 2),
-    ("The Hobbit", 3, 6),
-    ("The Fellowship of the Ring", 3, 3),
-    ("Murder on the Orient Express", 4, 4),
-    ("The Da Vinci Code", 5, 5)
-]
+BOOKS = (
+    ("Harry Potter and the Sorcerer's Stone", "J.K. Rowling", 5),
+    ("Harry Potter and the Chamber of Secrets", "J.K. Rowling", 3),
+    ("1984", "George Orwell", 4),
+    ("Animal Farm", "George Orwell", 2),
+    ("The Hobbit", "J.R.R. Tolkien", 6),
+    ("The Fellowship of the Ring", "J.R.R. Tolkien", 3),
+    ("Murder on the Orient Express", "Agatha Christie", 4),
+    ("The Da Vinci Code", "Dan Brown", 5),
+)
 
-f.executemany("INSERT OR IGNORE INTO books (title, author_id, copies) VALUES (?, ?, ?)", books_data)
-
-# 3. Insert 5 Members
-members_data = [
+MEMBERS = (
     ("Alice Smith", "alice@email.com"),
     ("Bob Jones", "bob@email.com"),
     ("Charlie Brown", "charlie@email.com"),
     ("Diana Prince", "diana@email.com"),
-    ("Ethan Hunt", "ethan@email.com")
-]
+    ("Ethan Hunt", "ethan@email.com"),
+)
 
-f.executemany("INSERT OR IGNORE INTO members (name, email) VALUES (?, ?)", members_data)
+INITIAL_LOANS = (
+    ("Harry Potter and the Sorcerer's Stone", "alice@email.com"),
+    ("1984", "alice@email.com"),
+    ("The Hobbit", "bob@email.com"),
+    ("Animal Farm", "charlie@email.com"),
+    ("The Da Vinci Code", "diana@email.com"),
+)
 
-# 4. Insert 5 Loans (Junction table linking book_id and member_id)
-loans_data = [
-    (1, 1),  # Book 1 loaned to Member 1
-    (3, 2),  # Book 3 loaned to Member 2
-    (5, 3),  # Book 5 loaned to Member 3
-    (2, 4),  # Book 2 loaned to Member 4
-    (7, 5)   # Book 7 loaned to Member 5
-]
-f.executemany("INSERT OR IGNORE INTO loans (book_id, member_id) VALUES (?, ?)", loans_data)
 
-# Verify tables and printed output
-tables = ["authors", "books", "members", "loans"]
-for table in tables:
-    print(f"\n--- Contents of {table} ---")
-    f.execute(f"SELECT * FROM {table}")
-    for row in f.fetchall():
-        print(row)
-        
-conn.commit()
+def ensure_status_column(conn):
+    columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(loans)").fetchall()
+    }
+    if "status" not in columns:
+        conn.execute(
+            """
+            ALTER TABLE loans
+            ADD COLUMN status TEXT NOT NULL DEFAULT 'ISSUED'
+            CHECK (status IN ('ISSUED', 'RETURNED'))
+            """
+        )
+        conn.execute(
+            """
+            UPDATE loans
+            SET status = CASE
+                WHEN return_date IS NULL THEN 'ISSUED'
+                ELSE 'RETURNED'
+            END
+            """
+        )
+
+
+def main():
+    try:
+        conn = sqlite3.connect(DATABASE_PATH)
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+        ensure_status_column(conn)
+
+        with conn:
+            for name in AUTHORS:
+                conn.execute(
+                    """
+                    INSERT INTO authors (name)
+                    SELECT ?
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM authors WHERE name = ?
+                    )
+                    """,
+                    (name, name),
+                )
+
+            author_ids = {
+                name: conn.execute(
+                    "SELECT author_id FROM authors WHERE name = ?", (name,)
+                ).fetchone()[0]
+                for name in AUTHORS
+            }
+            for title, author, copies in BOOKS:
+                conn.execute(
+                    """
+                    INSERT INTO books (title, author_id, copies)
+                    SELECT ?, ?, ?
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM books WHERE title = ? AND author_id = ?
+                    )
+                    """,
+                    (title, author_ids[author], copies, title, author_ids[author]),
+                )
+
+            conn.executemany(
+                "INSERT OR IGNORE INTO members (name, email) VALUES (?, ?)",
+                MEMBERS,
+            )
+
+            has_loans = conn.execute(
+                "SELECT 1 FROM loans LIMIT 1"
+            ).fetchone()
+            if has_loans is None:
+                for title, email in INITIAL_LOANS:
+                    book_id, copies = conn.execute(
+                        "SELECT book_id, copies FROM books WHERE title = ?",
+                        (title,),
+                    ).fetchone()
+                    member_id = conn.execute(
+                        "SELECT member_id FROM members WHERE email = ?", (email,)
+                    ).fetchone()[0]
+                    if copies > 0:
+                        conn.execute(
+                            """
+                            INSERT INTO loans (book_id, member_id, status)
+                            VALUES (?, ?, 'ISSUED')
+                            """,
+                            (book_id, member_id),
+                        )
+                        conn.execute(
+                            "UPDATE books SET copies = copies - 1 WHERE book_id = ?",
+                            (book_id,),
+                        )
+
+        print(f"Database is ready: {DATABASE_PATH}")
+    except (OSError, sqlite3.Error) as error:
+        print(f"Could not set up the library database: {error}")
+    finally:
+        if "conn" in locals():
+            conn.close()
+
+
+if __name__ == "__main__":
+    main()
