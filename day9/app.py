@@ -170,7 +170,7 @@ def return_book(conn):
 
 def main():
     try:
-        conn = sqlite3.connect("library.db")
+        conn = sqlite3.connect("/Users/punith/Documents/10-Day-Sprint/library.db")
         conn.execute("PRAGMA foreign_keys = ON")
         loan_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(loans)").fetchall()
